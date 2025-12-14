@@ -5,38 +5,27 @@ const cors = require('cors');
 
 const app = express();
 
-// Güvenlik: Her yerden erişime izin ver
 app.use(cors({ origin: '*', methods: '*', allowedHeaders: '*' }));
 
-// Temizleme Fonksiyonu (NTV link yapısına uygun hale getirir)
 function slugify(text) {
     if (!text) return "";
     const trMap = {'ç': 'c', 'Ç': 'c', 'ğ': 'g', 'Ğ': 'g', 'ş': 's', 'Ş': 's', 'ü': 'u', 'Ü': 'u', 'ı': 'i', 'İ': 'i', 'ö': 'o', 'Ö': 'o'};
     return text.toLowerCase()
         .replace(/[çğşüıö]/g, char => trMap[char])
-        .replace(/[^a-z0-9]/g, ''); // Tire (-) bile kaldırıp bitişik yazıyor (örn: gaziosmanpasa)
+        .replace(/[^a-z0-9]/g, '');
 }
 
 app.get('/api/vakitler', async (req, res) => {
-    // Query'den verileri al
     let { sehir, ilce } = req.query;
 
-    // HATA AYIKLAMA: Gelen veriyi konsola bas (Sunucu loglarından kontrol et)
-    console.log(`Gelen İstek -> Şehir: ${sehir}, İlçe: ${ilce}`);
+    console.log(`📡 İSTEK GELDİ: Şehir: ${sehir} | İlçe: ${ilce}`);
 
-    // Eğer parametre hiç gelmemişse hata döndür veya varsayılan ata
-    // (Burada varsayılanı sildim, veri gelmezse uyarsın)
-    if (!sehir || !ilce) {
-        return res.status(400).json({
-            error: 'Eksik Parametre',
-            message: 'Lütfen ?sehir=istanbul&ilce=kadikoy şeklinde parametre gönderin.'
-        });
-    }
+    if (!sehir) sehir = "istanbul";
+    if (!ilce) ilce = "beylikduzu";
 
     const cleanSehir = slugify(sehir);
-    const cleanIlce = slugify(ilce); // Ne gelirse onu temizleyip koyar, Fatih'e çevirmez.
+    const cleanIlce = slugify(ilce);
     
-    // NTV Link Yapısı
     const targetUrl = `https://www.ntv.com.tr/namaz-vakitleri/${cleanSehir}/${cleanIlce}`;
 
     try {
@@ -51,8 +40,11 @@ app.get('/api/vakitler', async (req, res) => {
             const cols = $(element).find('td');
             if (cols.length < 7) return;
 
+            // Tarih verisini alıp konsola basalım ki görelim
+            const rawDate = $(cols[0]).text().trim();
+            
             haftalikListe.push({
-                date: $(cols[0]).text().trim(),
+                date: rawDate, 
                 Fajr: $(cols[1]).text().trim(),
                 Sunrise: $(cols[2]).text().trim(),
                 Dhuhr: $(cols[3]).text().trim(),
@@ -62,25 +54,31 @@ app.get('/api/vakitler', async (req, res) => {
             });
         });
 
-        if (haftalikListe.length === 0) throw new Error("Tablo boş geldi.");
+        if (haftalikListe.length === 0) {
+            console.log("❌ Tablo boş! NTV HTML yapısı değişmiş olabilir veya URL yanlış.");
+            throw new Error("Tablo yapısı değişmiş veya veri bulunamadı.");
+        }
 
         const bugunData = haftalikListe[0];
 
+        // LOGLAMA: Burası sana terminalde gerçeği gösterecek
+        console.log("✅ NTV'den Çekilen İlk Tarih:", bugunData.date);
+        console.log("⚠️ Eğer telefonun tarihi bu değilse, uygulama veriyi göstermez!");
+
         res.json({
             success: true,
-            location: `${ilce.toUpperCase()} / ${sehir.toUpperCase()}`, // Senin gönderdiğin orijinal isim
-            search_url: targetUrl, // Hangi adrese gittiğini gör
+            source: 'NTV',
+            location: `${ilce.toUpperCase()} / ${sehir.toUpperCase()}`,
+            server_time_check: new Date().toLocaleString(), // Sunucunun (PC'nin) saati
             times: bugunData, 
             results: haftalikListe 
         });
 
     } catch (error) {
-        console.error("API Hatası:", error.message);
-        
-        // NTV'de sayfa yoksa (Örn: Mahalle adı girildiyse) burası çalışır
+        console.error("🔥 API Hatası:", error.message);
         res.status(404).json({ 
             error: 'Veri Bulunamadı', 
-            message: 'Bu şehir/ilçe kombinasyonu NTV sitesinde bulunamadı. Lütfen ilçe ismini kontrol edin (Mahalle girmeyin).',
+            message: 'NTV erişimi başarısız.',
             tried_url: targetUrl
         });
     }
