@@ -1,65 +1,68 @@
 // api/index.js
 const express = require('express');
 const axios = require('axios');
-const cheerio = require('cheerio');
 const cors = require('cors');
 
 const app = express();
 app.use(cors());
 
 app.get('/api/vakitler', async (req, res) => {
-    // Şehir ve İlçe parametrelerini al (Türkçe karakter düzeltmesi gerekebilir)
-    let { sehir, ilce } = req.query;
+    let { ilce } = req.query; // Sadece ilçe ismi yeterli (Örn: Beylikduzu)
 
-    if (!sehir || !ilce) {
-        // Varsayılan: İstanbul/Beylikdüzü
-        sehir = "istanbul";
-        ilce = "beylikduzu";
-    }
+    if (!ilce) ilce = "Fatih"; // Varsayılan
+
+    // Türkçe karakterleri arama için düzenle
+    const query = ilce.toLowerCase()
+        .replace(/ğ/g, "g").replace(/ü/g, "u").replace(/ş/g, "s")
+        .replace(/ı/g, "i").replace(/ö/g, "o").replace(/ç/g, "c");
 
     try {
-        // namazvakti.com sitesinden veriyi çek (Diyanet uyumludur)
-        // URL yapısı: namazvakti.com/Turkiye/istanbul-beylikduzu-namaz-vakti.html
-        const url = `https://www.namazvakti.com/Turkiye/${sehir}-${ilce}-namaz-vakti.html`;
-        
-        const response = await axios.get(url);
-        const html = response.data;
-        const $ = cheerio.load(html);
+        // 1. Diyanet'te İlçeyi Arat ve ID'sini Bul
+        const searchUrl = `https://awqatsalah.diyanet.gov.tr/api/Place/SearchList?q=${query}`;
+        const searchRes = await axios.get(searchUrl);
 
-        // Sitedeki ID'lerden verileri yakala
-        const imsak = $('#imsak').text().trim();
-        const gunes = $('#gunes').text().trim();
-        const ogle = $('#ogle').text().trim();
-        const ikindi = $('#ikindi').text().trim();
-        const aksam = $('#aksam').text().trim();
-        const yatsi = $('#yatsi').text().trim();
+        // Sonuç var mı?
+        if (!searchRes.data || searchRes.data.length === 0) {
+            throw new Error("İlçe bulunamadı");
+        }
 
-        // Eğer veri boş geldiyse hata fırlat
-        if (!imsak || !aksam) throw new Error("Veri okunamadı");
+        // İlk sonucu al (En güvenilir olan genelde ilkidir)
+        const place = searchRes.data[0];
+        const placeId = place.id;
+        const placeName = place.name; // Örn: BEYLİKDÜZÜ / İSTANBUL
 
-        // JSON olarak döndür
+        // 2. ID ile Vakitleri Çek
+        const timesUrl = `https://awqatsalah.diyanet.gov.tr/api/PrayerTime/Daily/${placeId}`;
+        const timesRes = await axios.get(timesUrl);
+        const data = timesRes.data;
+
+        // Diyanet listeyi bugünden itibaren verir. İlk eleman bugündür.
+        const todayData = data[0];
+        const tomorrowData = data[1]; // Yarın (Gece sayacı için lazım)
+
+        if (!todayData) throw new Error("Vakit verisi alınamadı");
+
         res.json({
             success: true,
-            source: 'Diyanet/NamazVakti',
-            location: `${ilce.toUpperCase()}, ${sehir.toUpperCase()}`,
+            source: 'Diyanet (Official/AwqatSalah)',
+            location: placeName,
             times: {
-                Fajr: imsak,
-                Sunrise: gunes,
-                Dhuhr: ogle,
-                Asr: ikindi,
-                Maghrib: aksam,
-                Isha: yatsi
-            }
+                Fajr: todayData.fajr,
+                Sunrise: todayData.sunrise,
+                Dhuhr: todayData.dhuhr,
+                Asr: todayData.asr,
+                Maghrib: todayData.maghrib,
+                Isha: todayData.isha
+            },
+            tomorrowFajr: tomorrowData ? tomorrowData.fajr : null
         });
 
     } catch (error) {
         res.status(500).json({ 
-            error: 'Veri alınamadı', 
-            details: error.message,
-            hint: "Şehir ve ilçe ismini ingilizce karakterlerle küçük harf yazın. Örn: istanbul-fatih"
+            error: 'Sunucu Hatası', 
+            details: error.message 
         });
     }
 });
 
-// Vercel için export ediyoruz
 module.exports = app;
