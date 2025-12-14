@@ -7,45 +7,61 @@ const app = express();
 app.use(cors());
 
 app.get('/api/vakitler', async (req, res) => {
-    let { ilce } = req.query; // Sadece ilçe ismi yeterli (Örn: Beylikduzu)
+    let { ilce } = req.query;
 
-    if (!ilce) ilce = "Fatih"; // Varsayılan
+    if (!ilce) ilce = "Fatih"; // Test için varsayılan
 
-    // Türkçe karakterleri arama için düzenle
-    const query = ilce.toLowerCase()
-        .replace(/ğ/g, "g").replace(/ü/g, "u").replace(/ş/g, "s")
-        .replace(/ı/g, "i").replace(/ö/g, "o").replace(/ç/g, "c");
+    // Türkçe karakterleri ve boşlukları temizle
+    const cleanQuery = ilce.trim().toLowerCase();
 
     try {
-        // 1. Diyanet'te İlçeyi Arat ve ID'sini Bul
-        const searchUrl = `https://awqatsalah.diyanet.gov.tr/api/Place/SearchList?q=${query}`;
-        const searchRes = await axios.get(searchUrl);
+        // MASKELİ İSTEK (User-Agent ekliyoruz ki Diyanet bizi engellemesin)
+        const config = {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json, text/plain, */*',
+                'Referer': 'https://awqatsalah.diyanet.gov.tr/',
+                'Origin': 'https://awqatsalah.diyanet.gov.tr'
+            }
+        };
 
-        // Sonuç var mı?
+        // 1. ARAMA YAP (ID Bul)
+        // Diyanet arama endpoint'i
+        const searchUrl = `https://awqatsalah.diyanet.gov.tr/api/Place/SearchList?q=${encodeURIComponent(cleanQuery)}`;
+        console.log("Aranıyor:", searchUrl); // Log (Vercel loglarında görünür)
+
+        const searchRes = await axios.get(searchUrl, config);
+
+        // Arama sonucu boş mu?
         if (!searchRes.data || searchRes.data.length === 0) {
-            throw new Error("İlçe bulunamadı");
+            return res.status(404).json({ error: "İlçe bulunamadı. Lütfen 'fatih', 'beylikduzu' gibi deneyin." });
         }
 
-        // İlk sonucu al (En güvenilir olan genelde ilkidir)
+        // İlk sonucu al
         const place = searchRes.data[0];
         const placeId = place.id;
         const placeName = place.name; // Örn: BEYLİKDÜZÜ / İSTANBUL
 
-        // 2. ID ile Vakitleri Çek
+        // 2. VAKİTLERİ ÇEK
         const timesUrl = `https://awqatsalah.diyanet.gov.tr/api/PrayerTime/Daily/${placeId}`;
-        const timesRes = await axios.get(timesUrl);
+        const timesRes = await axios.get(timesUrl, config);
+        
         const data = timesRes.data;
 
-        // Diyanet listeyi bugünden itibaren verir. İlk eleman bugündür.
-        const todayData = data[0];
-        const tomorrowData = data[1]; // Yarın (Gece sayacı için lazım)
+        // Veri kontrolü
+        if (!data || data.length === 0) {
+            throw new Error("Diyanet ID buldu ama vakit listesi boş döndü.");
+        }
 
-        if (!todayData) throw new Error("Vakit verisi alınamadı");
+        const todayData = data[0]; // Bugün
+        const tomorrowData = data[1]; // Yarın
 
+        // BAŞARILI SONUÇ DÖNDÜR
         res.json({
             success: true,
-            source: 'Diyanet (Official/AwqatSalah)',
+            source: 'Diyanet Official (Masked)',
             location: placeName,
+            placeId: placeId,
             times: {
                 Fajr: todayData.fajr,
                 Sunrise: todayData.sunrise,
@@ -58,9 +74,11 @@ app.get('/api/vakitler', async (req, res) => {
         });
 
     } catch (error) {
+        // Detaylı hata raporu
         res.status(500).json({ 
             error: 'Sunucu Hatası', 
-            details: error.message 
+            message: error.message,
+            details: error.response ? error.response.data : "Diyanet sunucusuna erişilemedi"
         });
     }
 });
