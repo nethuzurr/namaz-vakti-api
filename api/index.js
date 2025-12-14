@@ -5,36 +5,36 @@ const cors = require('cors');
 
 const app = express();
 
-// Tüm güvenlik kilitlerini aç
+// Güvenlik: Her yerden erişime izin ver
 app.use(cors({ origin: '*', methods: '*', allowedHeaders: '*' }));
 
-// Türkçe karakterleri ve boşlukları temizle
+// Temizleme Fonksiyonu (NTV link yapısına uygun hale getirir)
 function slugify(text) {
     if (!text) return "";
     const trMap = {'ç': 'c', 'Ç': 'c', 'ğ': 'g', 'Ğ': 'g', 'ş': 's', 'Ş': 's', 'ü': 'u', 'Ü': 'u', 'ı': 'i', 'İ': 'i', 'ö': 'o', 'Ö': 'o'};
     return text.toLowerCase()
         .replace(/[çğşüıö]/g, char => trMap[char])
-        .replace(/[^a-z0-9]/g, ''); // Sadece harf ve rakam kalsın
+        .replace(/[^a-z0-9]/g, ''); // Tire (-) bile kaldırıp bitişik yazıyor (örn: gaziosmanpasa)
 }
 
 app.get('/api/vakitler', async (req, res) => {
+    // Query'den verileri al
     let { sehir, ilce } = req.query;
 
-    // 1. Varsayılanlar (Parametre gelmezse çalışacaklar)
-    if (!sehir) sehir = "istanbul";
-    if (!ilce) ilce = "beylikduzu";
+    // HATA AYIKLAMA: Gelen veriyi konsola bas (Sunucu loglarından kontrol et)
+    console.log(`Gelen İstek -> Şehir: ${sehir}, İlçe: ${ilce}`);
 
-    // 2. NTV UYUM MODU: 'Merkez' sorunu için fix
-    let searchIlce = ilce;
-    if (ilce.toLowerCase() === 'merkez') {
-        if (sehir.toLowerCase().includes('istanbul')) searchIlce = 'fatih';
-        else if (sehir.toLowerCase().includes('ankara')) searchIlce = 'cankaya';
-        else if (sehir.toLowerCase().includes('izmir')) searchIlce = 'konak';
-        // Diğer şehirlerde 'merkez' çalışabilir.
+    // Eğer parametre hiç gelmemişse hata döndür veya varsayılan ata
+    // (Burada varsayılanı sildim, veri gelmezse uyarsın)
+    if (!sehir || !ilce) {
+        return res.status(400).json({
+            error: 'Eksik Parametre',
+            message: 'Lütfen ?sehir=istanbul&ilce=kadikoy şeklinde parametre gönderin.'
+        });
     }
 
     const cleanSehir = slugify(sehir);
-    const cleanIlce = slugify(searchIlce);
+    const cleanIlce = slugify(ilce); // Ne gelirse onu temizleyip koyar, Fatih'e çevirmez.
     
     // NTV Link Yapısı
     const targetUrl = `https://www.ntv.com.tr/namaz-vakitleri/${cleanSehir}/${cleanIlce}`;
@@ -45,56 +45,43 @@ app.get('/api/vakitler', async (req, res) => {
         });
 
         const $ = cheerio.load(response.data);
-        
-        // Tüm haftayı tutacak boş bir liste oluşturuyoruz
         const haftalikListe = [];
 
         $('table tbody tr').each((index, element) => {
             const cols = $(element).find('td');
-            
-            // Satırda yeterli veri yoksa (başlık vs ise) atla
             if (cols.length < 7) return;
 
-            // Verileri çek ve listeye ekle
             haftalikListe.push({
-                date: $(cols[0]).text().trim(),      // Tarih
-                Fajr: $(cols[1]).text().trim(),      // İmsak
-                Sunrise: $(cols[2]).text().trim(),   // Güneş
-                Dhuhr: $(cols[3]).text().trim(),     // Öğle
-                Asr: $(cols[4]).text().trim(),       // İkindi
-                Maghrib: $(cols[5]).text().trim(),   // Akşam
-                Isha: $(cols[6]).text().trim()       // Yatsı
+                date: $(cols[0]).text().trim(),
+                Fajr: $(cols[1]).text().trim(),
+                Sunrise: $(cols[2]).text().trim(),
+                Dhuhr: $(cols[3]).text().trim(),
+                Asr: $(cols[4]).text().trim(),
+                Maghrib: $(cols[5]).text().trim(),
+                Isha: $(cols[6]).text().trim()
             });
         });
 
-        // Eğer liste boşsa site yapısı değişmiş demektir
-        if (haftalikListe.length === 0) throw new Error("Tablo yapısı değişmiş veya veri bulunamadı.");
+        if (haftalikListe.length === 0) throw new Error("Tablo boş geldi.");
 
-        // KURTARICI HAMLE: Listenin ilk elemanını (Genelde Bugünü) alıyoruz
         const bugunData = haftalikListe[0];
 
         res.json({
             success: true,
-            source: 'NTV',
-            location: `${ilce.toUpperCase()} / ${sehir.toUpperCase()}`,
-            search_location: `${cleanIlce} / ${cleanSehir}`,
-            
-            // 1. ESKİ UYGULAMA İÇİN (Hata vermemesi için bunu geri ekledik)
+            location: `${ilce.toUpperCase()} / ${sehir.toUpperCase()}`, // Senin gönderdiğin orijinal isim
+            search_url: targetUrl, // Hangi adrese gittiğini gör
             times: bugunData, 
-            
-            // 2. YENİ ÖZELLİK İÇİN (Haftalık listeyi buraya koyduk)
             results: haftalikListe 
         });
 
     } catch (error) {
-        // Hata durumunda konsola da yazalım ki loglardan görebilelim
         console.error("API Hatası:", error.message);
-
+        
+        // NTV'de sayfa yoksa (Örn: Mahalle adı girildiyse) burası çalışır
         res.status(404).json({ 
-            error: 'Veri Bulunamadı (404)', 
-            message: 'NTV sitesinde bu ilçe için sayfa yok veya yapı değişmiş.',
-            tried_url: targetUrl,
-            original_input: `${ilce} / ${sehir}`
+            error: 'Veri Bulunamadı', 
+            message: 'Bu şehir/ilçe kombinasyonu NTV sitesinde bulunamadı. Lütfen ilçe ismini kontrol edin (Mahalle girmeyin).',
+            tried_url: targetUrl
         });
     }
 });
