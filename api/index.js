@@ -20,7 +20,7 @@ function slugify(text) {
 app.get('/api/vakitler', async (req, res) => {
     let { sehir, ilce } = req.query;
 
-    // 1. Varsayılanlar
+    // 1. Varsayılanlar (Parametre gelmezse çalışacaklar)
     if (!sehir) sehir = "istanbul";
     if (!ilce) ilce = "beylikduzu";
 
@@ -30,10 +30,13 @@ app.get('/api/vakitler', async (req, res) => {
         if (sehir.toLowerCase().includes('istanbul')) searchIlce = 'fatih';
         else if (sehir.toLowerCase().includes('ankara')) searchIlce = 'cankaya';
         else if (sehir.toLowerCase().includes('izmir')) searchIlce = 'konak';
+        // Diğer şehirlerde 'merkez' çalışabilir.
     }
 
     const cleanSehir = slugify(sehir);
     const cleanIlce = slugify(searchIlce);
+    
+    // NTV Link Yapısı
     const targetUrl = `https://www.ntv.com.tr/namaz-vakitleri/${cleanSehir}/${cleanIlce}`;
 
     try {
@@ -64,17 +67,29 @@ app.get('/api/vakitler', async (req, res) => {
             });
         });
 
+        // Eğer liste boşsa site yapısı değişmiş demektir
         if (haftalikListe.length === 0) throw new Error("Tablo yapısı değişmiş veya veri bulunamadı.");
+
+        // KURTARICI HAMLE: Listenin ilk elemanını (Genelde Bugünü) alıyoruz
+        const bugunData = haftalikListe[0];
 
         res.json({
             success: true,
             source: 'NTV',
             location: `${ilce.toUpperCase()} / ${sehir.toUpperCase()}`,
             search_location: `${cleanIlce} / ${cleanSehir}`,
-            results: haftalikListe // Artık tek obje değil, bir liste dönüyor
+            
+            // 1. ESKİ UYGULAMA İÇİN (Hata vermemesi için bunu geri ekledik)
+            times: bugunData, 
+            
+            // 2. YENİ ÖZELLİK İÇİN (Haftalık listeyi buraya koyduk)
+            results: haftalikListe 
         });
 
     } catch (error) {
+        // Hata durumunda konsola da yazalım ki loglardan görebilelim
+        console.error("API Hatası:", error.message);
+
         res.status(404).json({ 
             error: 'Veri Bulunamadı (404)', 
             message: 'NTV sitesinde bu ilçe için sayfa yok veya yapı değişmiş.',
