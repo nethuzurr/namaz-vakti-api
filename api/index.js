@@ -20,24 +20,20 @@ function slugify(text) {
 app.get('/api/vakitler', async (req, res) => {
     let { sehir, ilce } = req.query;
 
-    // 1. Web'de test ederken patlamaması için varsayılanlar (Sadece parametre yoksa devreye girer)
+    // 1. Varsayılanlar
     if (!sehir) sehir = "istanbul";
     if (!ilce) ilce = "beylikduzu";
 
-    // 2. NTV UYUM MODU: NTV "Merkez" kelimesini sevmez.
-    // Eğer GPS "Merkez" dediyse, NTV'nin anlayacağı dile çevirelim ama kullanıcıya çaktırmayalım.
+    // 2. NTV UYUM MODU: 'Merkez' sorunu için fix
     let searchIlce = ilce;
     if (ilce.toLowerCase() === 'merkez') {
         if (sehir.toLowerCase().includes('istanbul')) searchIlce = 'fatih';
         else if (sehir.toLowerCase().includes('ankara')) searchIlce = 'cankaya';
         else if (sehir.toLowerCase().includes('izmir')) searchIlce = 'konak';
-        // Diğer şehirlerde 'merkez' çalışabilir, dokunmuyoruz.
     }
 
     const cleanSehir = slugify(sehir);
     const cleanIlce = slugify(searchIlce);
-
-    // Hangi linke gidiyoruz?
     const targetUrl = `https://www.ntv.com.tr/namaz-vakitleri/${cleanSehir}/${cleanIlce}`;
 
     try {
@@ -46,55 +42,43 @@ app.get('/api/vakitler', async (req, res) => {
         });
 
         const $ = cheerio.load(response.data);
-        const now = new Date();
-        const trDate = new Intl.DateTimeFormat('tr-TR', {
-            timeZone: 'Europe/Istanbul', day: 'numeric', month: 'long', year: 'numeric'
-        }).format(now);
-
-        let foundData = null;
-        let tomorrowData = null;
+        
+        // Tüm haftayı tutacak boş bir liste oluşturuyoruz
+        const haftalikListe = [];
 
         $('table tbody tr').each((index, element) => {
             const cols = $(element).find('td');
+            
+            // Satırda yeterli veri yoksa (başlık vs ise) atla
             if (cols.length < 7) return;
 
-            const rowDateRaw = $(cols[0]).text().trim();
-            
-            if (rowDateRaw.includes(trDate) || index === 0) {
-                if (!foundData) {
-                    foundData = {
-                        date: rowDateRaw,
-                        Fajr: $(cols[1]).text().trim(),
-                        Sunrise: $(cols[2]).text().trim(),
-                        Dhuhr: $(cols[3]).text().trim(),
-                        Asr: $(cols[4]).text().trim(),
-                        Maghrib: $(cols[5]).text().trim(),
-                        Isha: $(cols[6]).text().trim()
-                    };
-                }
-            }
-            if (foundData && !tomorrowData && !rowDateRaw.includes(trDate) && index > 0) {
-                 tomorrowData = { Fajr: $(cols[1]).text().trim() };
-            }
+            // Verileri çek ve listeye ekle
+            haftalikListe.push({
+                date: $(cols[0]).text().trim(),      // Tarih
+                Fajr: $(cols[1]).text().trim(),      // İmsak
+                Sunrise: $(cols[2]).text().trim(),   // Güneş
+                Dhuhr: $(cols[3]).text().trim(),     // Öğle
+                Asr: $(cols[4]).text().trim(),       // İkindi
+                Maghrib: $(cols[5]).text().trim(),   // Akşam
+                Isha: $(cols[6]).text().trim()       // Yatsı
+            });
         });
 
-        if (!foundData) throw new Error("Tablo bulundu ama tarih eşleşmedi.");
+        if (haftalikListe.length === 0) throw new Error("Tablo yapısı değişmiş veya veri bulunamadı.");
 
         res.json({
             success: true,
             source: 'NTV',
-            location: `${ilce.toUpperCase()} / ${sehir.toUpperCase()}`, // Ekranda orijinal ismi göster (Merkez ise Merkez yazar)
-            search_location: `${cleanIlce} / ${cleanSehir}`, // Arka planda aranan yer
-            times: foundData,
-            tomorrowFajr: tomorrowData ? tomorrowData.Fajr : null
+            location: `${ilce.toUpperCase()} / ${sehir.toUpperCase()}`,
+            search_location: `${cleanIlce} / ${cleanSehir}`,
+            results: haftalikListe // Artık tek obje değil, bir liste dönüyor
         });
 
     } catch (error) {
-        // Hata durumunda sorunun kaynağını net söyle
         res.status(404).json({ 
             error: 'Veri Bulunamadı (404)', 
-            message: 'NTV sitesinde bu ilçe için sayfa yok.',
-            tried_url: targetUrl, // Hangi linki denedi de bulamadı?
+            message: 'NTV sitesinde bu ilçe için sayfa yok veya yapı değişmiş.',
+            tried_url: targetUrl,
             original_input: `${ilce} / ${sehir}`
         });
     }
