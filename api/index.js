@@ -1,121 +1,113 @@
 // api/index.js
 const express = require('express');
 const axios = require('axios');
+const cheerio = require('cheerio');
 const cors = require('cors');
 
 const app = express();
 app.use(cors());
 
-// İlçe -> ID Eşleşmeleri (Diyanet İçin)
-const ID_LISTESI = {
-    "istanbul": "9541", "fatih": "9541", "merkez": "9541",
-    "beylikduzu": "9542", "beylikdüzü": "9542",
-    "avcilar": "9533", "avcılar": "9533",
-    "esenyurt": "9554", "basaksehir": "9536",
-    "uskudar": "9579", "kadikoy": "9558",
-    "umraniye": "9578", "kartal": "9560"
-    // Diğerleri eksik olsa bile kod çalışır
-};
+// Türkçe karakter düzeltme (Link yapısı için)
+function slugify(text) {
+    const trMap = {
+        'ç': 'c', 'Ç': 'c', 'ğ': 'g', 'Ğ': 'g', 'ş': 's', 'Ş': 's',
+        'ü': 'u', 'Ü': 'u', 'ı': 'i', 'İ': 'i', 'ö': 'o', 'Ö': 'o'
+    };
+    return text.toLowerCase()
+        .replace(/[çğşüıö]/g, char => trMap[char])
+        .replace(/[^a-z0-9]/g, ''); // Sadece harf ve rakam kalsın (Habertürk formatı)
+}
 
 app.get('/api/vakitler', async (req, res) => {
-    let { ilce } = req.query;
-    if (!ilce) ilce = "beylikduzu"; 
+    let { sehir, ilce } = req.query;
+    
+    // Varsayılanlar
+    if (!sehir) sehir = "istanbul";
+    if (!ilce) ilce = "beylikduzu";
 
-    // Temizlik
-    const cleanKey = ilce.toLowerCase()
-        .replace(/ğ/g, "g").replace(/ü/g, "u").replace(/ş/g, "s")
-        .replace(/ı/g, "i").replace(/ö/g, "o").replace(/ç/g, "c").trim();
+    const cleanSehir = slugify(sehir);
+    const cleanIlce = slugify(ilce);
 
-    // 1. ADIM: DİYANET'İ DENE (Resmi Kaynak)
     try {
-        let placeId = ID_LISTESI[cleanKey] || "9541"; // Bulamazsa Fatih
+        // Habertürk URL Yapısı: https://www.haberturk.com/namaz-vakitleri/istanbul/beylikduzu
+        const url = `https://www.haberturk.com/namaz-vakitleri/${cleanSehir}/${cleanIlce}`;
+        console.log("Hedef:", url);
 
-        const diyanetUrl = `https://awqatsalah.diyanet.gov.tr/api/PrayerTime/Daily/${placeId}`;
-        
-        // Diyanet'e istek at
-        const response = await axios.get(diyanetUrl, {
-            headers: { 'User-Agent': 'Mozilla/5.0' },
-            timeout: 3000 // 3 saniye içinde cevap vermezse pes et
+        const response = await axios.get(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
         });
 
-        // Veriyi bul
-        const data = response.data;
-        
-        // Türkiye tarihini bul
-        const now = new Date();
-        const turkeyDateStr = new Intl.DateTimeFormat('tr-TR', {
-            timeZone: 'Europe/Istanbul', day: '2-digit', month: '2-digit', year: 'numeric'
-        }).format(now); // "15.12.2025"
+        const $ = cheerio.load(response.data);
+        const prayerList = [];
 
-        let todayData = data.find(item => item.gregorianDateShort === turkeyDateStr);
-        if (!todayData) todayData = data[0];
-
-        const todayIndex = data.indexOf(todayData);
-        const tomorrowData = data[todayIndex + 1];
-
-        // BAŞARILI OLURSA DÖN
-        return res.json({
-            success: true,
-            source: 'Diyanet Official',
-            location: `${ilce.toUpperCase()} / TR`,
-            times: {
-                Fajr: todayData.fajr,
-                Sunrise: todayData.sunrise,
-                Dhuhr: todayData.dhuhr,
-                Asr: todayData.asr,
-                Maghrib: todayData.maghrib,
-                Isha: todayData.isha
-            },
-            tomorrowFajr: tomorrowData ? tomorrowData.fajr : null
-        });
-
-    } catch (diyanetError) {
-        // 2. ADIM: DİYANET HATA VERİRSE (404/Timeout) -> ALADHAN'A GEÇ (B PLANI)
-        console.log("Diyanet başarısız, Aladhan devreye giriyor...");
-        
-        try {
-            // Tarihi API formatına çevir (15-12-2025)
-            const now = new Date();
-            const dateStr = new Intl.DateTimeFormat('en-GB', {
-                timeZone: 'Europe/Istanbul', day: '2-digit', month: '2-digit', year: 'numeric'
-            }).format(now).replace(/\//g, '-');
-
-            const address = `${cleanKey},Istanbul,Turkey`;
-            const aladhanUrl = `https://api.aladhan.com/v1/timingsByAddress/${dateStr}`;
-
-            const response = await axios.get(aladhanUrl, {
-                params: {
-                    address: address,
-                    method: 13, // Diyanet Metodu
-                    timezone: 'Europe/Istanbul', // Saat Zorlama
-                    iso8601: 'false'
+        // Sayfadaki aylık tabloyu bul
+        // Genelde "table" etiketidir.
+        $('table tbody tr').each((index, element) => {
+            const cols = $(element).find('td');
+            
+            // Satırda en az 7 sütun varsa (Tarih + 6 Vakit) veri vardır
+            if (cols.length >= 7) {
+                // Tarihi al (Örn: 15 Aralık 2025)
+                const rawDate = $(cols[0]).text().trim();
+                
+                // Habertürk tarih formatını (15 Aralık 2025) bizim formata (15.12.2025) çevir
+                const formattedDate = parseHaberturkDate(rawDate);
+                
+                if (formattedDate) {
+                    prayerList.push({
+                        date: formattedDate,
+                        times: {
+                            Fajr: $(cols[1]).text().trim(),    // İmsak
+                            Sunrise: $(cols[2]).text().trim(), // Güneş
+                            Dhuhr: $(cols[3]).text().trim(),   // Öğle
+                            Asr: $(cols[4]).text().trim(),     // İkindi
+                            Maghrib: $(cols[5]).text().trim(), // Akşam
+                            Isha: $(cols[6]).text().trim()     // Yatsı
+                        }
+                    });
                 }
-            });
+            }
+        });
 
-            const timings = response.data.data.timings;
-            // Saatlerdeki (EEST) temizliği
-            Object.keys(timings).forEach(k => timings[k] = timings[k].split(' ')[0]);
-
-            return res.json({
-                success: true,
-                source: 'Aladhan Fallback (Diyanet Failed)',
-                location: `${ilce.toUpperCase()} (Yedek)`,
-                times: {
-                    Fajr: timings.Fajr,
-                    Sunrise: timings.Sunrise,
-                    Dhuhr: timings.Dhuhr,
-                    Asr: timings.Asr,
-                    Maghrib: timings.Maghrib,
-                    Isha: timings.Isha
-                },
-                tomorrowFajr: null // Aladhan günlük verir, yarını ayrıca çekmek gerekir (şimdilik null)
-            });
-
-        } catch (backupError) {
-            // HER İKİSİ DE ÇÖKERSE (İmkansız ama)
-            return res.status(500).json({ error: 'Tüm servisler devre dışı', details: backupError.message });
+        // Eğer tablo boşsa veya site yapısı değiştiyse hata döndür
+        if (prayerList.length === 0) {
+            throw new Error("Tablo okunamadı veya ilçe ismi yanlış.");
         }
+
+        res.json({
+            success: true,
+            source: 'Haberturk',
+            location: `${ilce.toUpperCase()} / ${sehir.toUpperCase()}`,
+            data: prayerList
+        });
+
+    } catch (error) {
+        res.status(500).json({ error: 'Veri Çekilemedi', details: error.message });
     }
 });
+
+// Ay isimlerini sayıya çevir
+function parseHaberturkDate(dateStr) {
+    // Gelen: "15 Aralık 2025 Pazartesi"
+    const parts = dateStr.split(' ');
+    if (parts.length < 3) return null;
+
+    const day = parts[0].padStart(2, '0');
+    const monthName = parts[1].toLowerCase();
+    const year = parts[2];
+
+    const months = {
+        'ocak': '01', 'şubat': '02', 'subat': '02', 'mart': '03', 'nisan': '04', 'mayıs': '05', 'mayis': '05',
+        'haziran': '06', 'temmuz': '07', 'ağustos': '08', 'agustos': '08', 'eylül': '09', 'eylul': '09',
+        'ekim': '10', 'kasım': '11', 'kasim': '11', 'aralık': '12', 'aralik': '12'
+    };
+
+    const month = months[monthName];
+    if (!month) return null;
+
+    return `${day}.${month}.${year}`; // Çıktı: 15.12.2025
+}
 
 module.exports = app;
