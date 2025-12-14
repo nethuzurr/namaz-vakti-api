@@ -1,4 +1,3 @@
-// api/index.js
 const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
@@ -6,39 +5,37 @@ const cors = require('cors');
 
 const app = express();
 
-app.use(cors({
-    origin: '*',
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
-    preflightContinue: false,
-    optionsSuccessStatus: 204
-}));
+// Tüm erişim izinlerini aç (CORS)
+app.use(cors({ origin: '*', methods: '*', allowedHeaders: '*' }));
 
+app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+    next();
+});
+
+// Türkçe karakter temizleyici (Link yapısı için)
 function slugify(text) {
+    if(!text) return "";
     const trMap = {'ç': 'c', 'Ç': 'c', 'ğ': 'g', 'Ğ': 'g', 'ş': 's', 'Ş': 's', 'ü': 'u', 'Ü': 'u', 'ı': 'i', 'İ': 'i', 'ö': 'o', 'Ö': 'o'};
-    return text.toLowerCase().replace(/[çğşüıö]/g, char => trMap[char]).replace(/[^a-z0-9]/g, '');
+    return text.toLowerCase()
+        .replace(/[çğşüıö]/g, char => trMap[char])
+        .replace(/[^a-z0-9]/g, '');
 }
 
 app.get('/api/vakitler', async (req, res) => {
+    // Varsayılan değer yok! Ne gelirse o.
+    // Eğer parametre yollamazsan hata döneriz ki "kafadan element uydurma" olayı bitsin.
     let { sehir, ilce } = req.query;
 
-    // 1. Varsayılanlar
-    if (!sehir) sehir = "istanbul";
-    if (!ilce) ilce = "beylikduzu";
-
-    // 2. AKILLI DÜZELTME (NTV 'Merkez' kabul etmez)
-    // Eğer ilçe "Merkez" ise ve şehir İstanbul ise, bunu "Fatih" yap.
-    if (ilce.toLowerCase() === "merkez") {
-        if (sehir.toLowerCase() === "istanbul") {
-            ilce = "fatih";
-        }
-        // Diğer şehirlerde Merkez genelde çalışır ama garanti olsun diye
-        // kullanıcıya bırakıyoruz.
+    if (!sehir || !ilce) {
+        return res.status(400).json({ error: 'Eksik Parametre', details: 'Lütfen şehir ve ilçe gönderin.' });
     }
 
     const cleanSehir = slugify(sehir);
     const cleanIlce = slugify(ilce);
-
-    // Linki oluştur (Hata durumunda görmek için değişkene atadık)
+    
+    // NTV Linki: ntv.com.tr/namaz-vakitleri/istanbul/beylikduzu
     const targetUrl = `https://www.ntv.com.tr/namaz-vakitleri/${cleanSehir}/${cleanIlce}`;
 
     try {
@@ -49,8 +46,7 @@ app.get('/api/vakitler', async (req, res) => {
         const $ = cheerio.load(response.data);
         const now = new Date();
         const trDate = new Intl.DateTimeFormat('tr-TR', {
-            timeZone: 'Europe/Istanbul',
-            day: 'numeric', month: 'long', year: 'numeric'
+            timeZone: 'Europe/Istanbul', day: 'numeric', month: 'long', year: 'numeric'
         }).format(now);
 
         let foundData = null;
@@ -61,7 +57,8 @@ app.get('/api/vakitler', async (req, res) => {
             if (cols.length < 7) return;
 
             const rowDateRaw = $(cols[0]).text().trim();
-
+            
+            // Bugünün tarihini içeren satırı bul
             if (rowDateRaw.includes(trDate) || index === 0) {
                 if (!foundData) {
                     foundData = {
@@ -75,12 +72,13 @@ app.get('/api/vakitler', async (req, res) => {
                     };
                 }
             }
+            // Yarını bul (Sayaç için)
             if (foundData && !tomorrowData && !rowDateRaw.includes(trDate) && index > 0) {
                  tomorrowData = { Fajr: $(cols[1]).text().trim() };
             }
         });
 
-        if (!foundData) throw new Error("Tarih tablosu okunamadı");
+        if (!foundData) throw new Error("Tarih eşleşmedi");
 
         res.json({
             success: true,
@@ -91,11 +89,11 @@ app.get('/api/vakitler', async (req, res) => {
         });
 
     } catch (error) {
-        // Hata durumunda hangi linkin bozuk olduğunu gösterelim
-        res.status(500).json({ 
-            error: 'NTV Sayfası Bulunamadı', 
-            details: error.message,
-            tried_url: targetUrl 
+        // Hata durumunda ne olduğunu net görelim
+        res.status(404).json({ 
+            error: 'Veri Bulunamadı', 
+            details: 'Bu ilçe için NTV sayfasında veri yok veya isim yanlış.',
+            link: targetUrl
         });
     }
 });
