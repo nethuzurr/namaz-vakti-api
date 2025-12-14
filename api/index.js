@@ -7,34 +7,41 @@ const app = express();
 app.use(cors());
 
 app.get('/api/vakitler', async (req, res) => {
-    // 1. Parametreleri al (Varsayılan: Istanbul/Beylikduzu)
     let { sehir, ilce } = req.query;
     if (!sehir) sehir = "Istanbul";
     if (!ilce) ilce = "Beylikduzu";
 
-    // Türkçe karakterleri İngilizceye çevir (Aladhan için)
     const fixChar = (str) => str.toLowerCase()
         .replace(/ğ/g, "g").replace(/ü/g, "u").replace(/ş/g, "s")
         .replace(/ı/g, "i").replace(/ö/g, "o").replace(/ç/g, "c");
     
     const cleanSehir = fixChar(sehir);
     const cleanIlce = fixChar(ilce);
-    
-    // Adres sorgusu: "Beylikduzu, Istanbul, Turkey"
     const address = `${cleanIlce},${cleanSehir},Turkey`;
 
     try {
-        const date = new Date();
-        const dateStr = `${date.getDate()}-${date.getMonth()+1}-${date.getFullYear()}`;
+        // --- TARİH DÜZELTMESİ (KRİTİK KISIM) ---
+        // Sunucu saati ne olursa olsun (ABD/Avrupa), biz Türkiye saatini baz alıyoruz.
+        const now = new Date();
+        const turkeyDate = new Intl.DateTimeFormat('en-GB', {
+            timeZone: 'Europe/Istanbul',
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric'
+        }).format(now); 
+        // Çıktı formatı: "15/12/2025" şeklindedir.
         
-        // 2. ALADHAN API'ye Bağlan (Diyanet Metodu: 13)
+        // Aladhan API tire (-) ister, slash (/) istemez. Onu düzeltiyoruz.
+        const dateStr = turkeyDate.replace(/\//g, '-'); 
+
+        // API İSTEĞİ
         const url = `https://api.aladhan.com/v1/timingsByAddress/${dateStr}`;
         
         const response = await axios.get(url, {
             params: {
                 address: address,
-                method: 13, // Diyanet İşleri Metodu
-                timezone: 'Europe/Istanbul', // 👈 KRİTİK NOKTA: Saati sunucuda zorluyoruz!
+                method: 13, // Diyanet
+                timezone: 'Europe/Istanbul',
                 iso8601: 'false'
             }
         });
@@ -49,7 +56,8 @@ app.get('/api/vakitler', async (req, res) => {
 
         res.json({
             success: true,
-            source: 'Diyanet (Via Proxy)',
+            source: 'Diyanet (Via Proxy / Fixed Date)',
+            queryDate: dateStr, // Hangi tarihi çektiğimizi görelim
             location: `${cleanIlce.toUpperCase()}, ${cleanSehir.toUpperCase()}`,
             times: {
                 Fajr: timings.Fajr,
