@@ -5,37 +5,39 @@ const cors = require('cors');
 
 const app = express();
 
-// Tüm erişim izinlerini aç (CORS)
+// Tüm güvenlik kilitlerini aç
 app.use(cors({ origin: '*', methods: '*', allowedHeaders: '*' }));
 
-app.use((req, res, next) => {
-    res.header("Access-Control-Allow-Origin", "*");
-    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
-    next();
-});
-
-// Türkçe karakter temizleyici (Link yapısı için)
+// Türkçe karakterleri ve boşlukları temizle
 function slugify(text) {
-    if(!text) return "";
+    if (!text) return "";
     const trMap = {'ç': 'c', 'Ç': 'c', 'ğ': 'g', 'Ğ': 'g', 'ş': 's', 'Ş': 's', 'ü': 'u', 'Ü': 'u', 'ı': 'i', 'İ': 'i', 'ö': 'o', 'Ö': 'o'};
     return text.toLowerCase()
         .replace(/[çğşüıö]/g, char => trMap[char])
-        .replace(/[^a-z0-9]/g, '');
+        .replace(/[^a-z0-9]/g, ''); // Sadece harf ve rakam kalsın
 }
 
 app.get('/api/vakitler', async (req, res) => {
-    // Varsayılan değer yok! Ne gelirse o.
-    // Eğer parametre yollamazsan hata döneriz ki "kafadan element uydurma" olayı bitsin.
     let { sehir, ilce } = req.query;
 
-    if (!sehir || !ilce) {
-        return res.status(400).json({ error: 'Eksik Parametre', details: 'Lütfen şehir ve ilçe gönderin.' });
+    // 1. Web'de test ederken patlamaması için varsayılanlar (Sadece parametre yoksa devreye girer)
+    if (!sehir) sehir = "istanbul";
+    if (!ilce) ilce = "beylikduzu";
+
+    // 2. NTV UYUM MODU: NTV "Merkez" kelimesini sevmez.
+    // Eğer GPS "Merkez" dediyse, NTV'nin anlayacağı dile çevirelim ama kullanıcıya çaktırmayalım.
+    let searchIlce = ilce;
+    if (ilce.toLowerCase() === 'merkez') {
+        if (sehir.toLowerCase().includes('istanbul')) searchIlce = 'fatih';
+        else if (sehir.toLowerCase().includes('ankara')) searchIlce = 'cankaya';
+        else if (sehir.toLowerCase().includes('izmir')) searchIlce = 'konak';
+        // Diğer şehirlerde 'merkez' çalışabilir, dokunmuyoruz.
     }
 
     const cleanSehir = slugify(sehir);
-    const cleanIlce = slugify(ilce);
-    
-    // NTV Linki: ntv.com.tr/namaz-vakitleri/istanbul/beylikduzu
+    const cleanIlce = slugify(searchIlce);
+
+    // Hangi linke gidiyoruz?
     const targetUrl = `https://www.ntv.com.tr/namaz-vakitleri/${cleanSehir}/${cleanIlce}`;
 
     try {
@@ -58,7 +60,6 @@ app.get('/api/vakitler', async (req, res) => {
 
             const rowDateRaw = $(cols[0]).text().trim();
             
-            // Bugünün tarihini içeren satırı bul
             if (rowDateRaw.includes(trDate) || index === 0) {
                 if (!foundData) {
                     foundData = {
@@ -72,28 +73,29 @@ app.get('/api/vakitler', async (req, res) => {
                     };
                 }
             }
-            // Yarını bul (Sayaç için)
             if (foundData && !tomorrowData && !rowDateRaw.includes(trDate) && index > 0) {
                  tomorrowData = { Fajr: $(cols[1]).text().trim() };
             }
         });
 
-        if (!foundData) throw new Error("Tarih eşleşmedi");
+        if (!foundData) throw new Error("Tablo bulundu ama tarih eşleşmedi.");
 
         res.json({
             success: true,
             source: 'NTV',
-            location: `${ilce.toUpperCase()} / ${sehir.toUpperCase()}`,
+            location: `${ilce.toUpperCase()} / ${sehir.toUpperCase()}`, // Ekranda orijinal ismi göster (Merkez ise Merkez yazar)
+            search_location: `${cleanIlce} / ${cleanSehir}`, // Arka planda aranan yer
             times: foundData,
             tomorrowFajr: tomorrowData ? tomorrowData.Fajr : null
         });
 
     } catch (error) {
-        // Hata durumunda ne olduğunu net görelim
+        // Hata durumunda sorunun kaynağını net söyle
         res.status(404).json({ 
-            error: 'Veri Bulunamadı', 
-            details: 'Bu ilçe için NTV sayfasında veri yok veya isim yanlış.',
-            link: targetUrl
+            error: 'Veri Bulunamadı (404)', 
+            message: 'NTV sitesinde bu ilçe için sayfa yok.',
+            tried_url: targetUrl, // Hangi linki denedi de bulamadı?
+            original_input: `${ilce} / ${sehir}`
         });
     }
 });
