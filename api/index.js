@@ -1,79 +1,122 @@
 // api/index.js
 const express = require('express');
 const axios = require('axios');
+const cheerio = require('cheerio');
 const cors = require('cors');
 
 const app = express();
 app.use(cors());
 
-// Türkçe karakter düzeltme (API uyumu için)
-function capitalize(text) {
-    if (!text) return "";
-    text = text.toString();
-    // Türkçe karakterleri İngilizceye çevir
-    const trMap = { 'ç':'c', 'ğ':'g', 'ş':'s', 'ü':'u', 'ı':'i', 'ö':'o', 'Ç':'C', 'Ğ':'G', 'Ş':'S', 'Ü':'U', 'İ':'I', 'Ö':'O' };
-    text = text.replace(/[çğşüıöÇĞŞÜİÖ]/g, char => trMap[char]);
-    // İlk harfi büyüt, gerisini küçült (Örn: beylikduzu -> Beylikduzu)
-    return text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
+// Türkçe karakterleri İngilizceye çevir (Link yapısı için)
+function slugify(text) {
+    const trMap = {
+        'ç': 'c', 'Ç': 'c', 'ğ': 'g', 'Ğ': 'g', 'ş': 's', 'Ş': 's',
+        'ü': 'u', 'Ü': 'u', 'ı': 'i', 'İ': 'i', 'ö': 'o', 'Ö': 'o'
+    };
+    return text.toLowerCase()
+        .replace(/[çğşüıö]/g, char => trMap[char])
+        .replace(/[^a-z0-9]/g, ''); // Sadece harf ve rakam
 }
 
 app.get('/api/vakitler', async (req, res) => {
     let { sehir, ilce } = req.query;
-
+    
     // Varsayılanlar
-    if (!sehir) sehir = "Istanbul";
-    if (!ilce) ilce = "Beylikduzu";
+    if (!sehir) sehir = "istanbul";
+    if (!ilce) ilce = "beylikduzu";
 
-    // API'nin istediği format: Region=Istanbul, City=Beylikduzu
-    const region = capitalize(sehir);
-    const city = capitalize(ilce);
+    const cleanSehir = slugify(sehir);
+    const cleanIlce = slugify(ilce);
 
     try {
-        // Bu açık kaynaklı API, arka planda Diyanet ID'lerini kullanarak veriyi çeker.
-        // Vercel üzerinde çalıştığı için hızlıdır ve engellenmez.
-        const url = `https://namaz-vakti.vercel.app/api/timesFromPlace?country=Turkey&region=${region}&city=${city}`;
-        
-        console.log("İstek atılıyor:", url);
-        const response = await axios.get(url);
-        const data = response.data;
+        // NTV Link Yapısı: https://www.ntv.com.tr/namaz-vakitleri/istanbul/beylikduzu
+        const url = `https://www.ntv.com.tr/namaz-vakitleri/${cleanSehir}/${cleanIlce}`;
+        console.log("Kaynak:", url);
 
-        // API bize o günün tarihini "YYYY-MM-DD" anahtarı olarak döner.
-        // Örn: data.times["2025-12-15"]
-        // Biz direkt ilk gelen günü alacağız.
-        const dateKeys = Object.keys(data.times);
-        const todayKey = dateKeys[0]; 
-        const todayTimes = data.times[todayKey]; // Dizi döner: ["06:33", "08:00", ...]
+        // Tarayıcı gibi davranarak sayfayı çek
+        const response = await axios.get(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
 
-        // Veri Diyanet sırasıyla gelir: İmsak, Güneş, Öğle, İkindi, Akşam, Yatsı
-        const timings = {
-            Fajr: todayTimes[0],
-            Sunrise: todayTimes[1],
-            Dhuhr: todayTimes[2],
-            Asr: todayTimes[3],
-            Maghrib: todayTimes[4],
-            Isha: todayTimes[5]
-        };
+        const $ = cheerio.load(response.data);
         
-        // Yarının verisi var mı? (Gece sayacı için)
-        let tomorrowFajr = null;
-        if (dateKeys.length > 1) {
-            tomorrowFajr = data.times[dateKeys[1]][0];
+        // NTV'de bugünün verisi genellikle "today-row" class'ına sahiptir veya tablonun ilk satırıdır.
+        // Ancak biz garantici olup bugünün tarihini sayfada arayacağız.
+        
+        // Türkiye Tarihini Bul (Gün.Ay.Yıl)
+        const now = new Date();
+        const trDate = new Intl.DateTimeFormat('tr-TR', {
+            timeZone: 'Europe/Istanbul',
+            day: 'numeric',
+            month: 'long', // "Aralık" gibi uzun isim
+            year: 'numeric'
+        }).format(now); 
+        // Çıktı Örn: "15 Aralık 2025"
+        
+        // Tablo satırlarını gez
+        let foundData = null;
+        let tomorrowData = null;
+
+        // Tablo satırlarını bul
+        $('table tbody tr').each((index, element) => {
+            const cols = $(element).find('td');
+            if (cols.length < 7) return;
+
+            // Satırdaki tarihi al
+            const rowDateRaw = $(cols[0]).text().trim(); // Örn: 15 Aralık 2025 Pazartesi
+
+            // Eğer satırdaki tarih, bugünün tarihini içeriyorsa AL
+            if (rowDateRaw.includes(trDate) || index === 0) { 
+                // index === 0: Eğer tarih eşleşmesi bulamazsak (format farkından), ilk satırı bugün kabul et (NTV ilk satıra bugünü koyar)
+                if (!foundData) {
+                    foundData = {
+                        date: rowDateRaw,
+                        Fajr: $(cols[1]).text().trim(),    // İmsak
+                        Sunrise: $(cols[2]).text().trim(), // Güneş
+                        Dhuhr: $(cols[3]).text().trim(),   // Öğle
+                        Asr: $(cols[4]).text().trim(),     // İkindi
+                        Maghrib: $(cols[5]).text().trim(), // Akşam
+                        Isha: $(cols[6]).text().trim()     // Yatsı
+                    };
+                }
+            }
+            
+            // Bugünü bulduysak, bir sonraki satırı "Yarın" olarak al
+            if (foundData && !tomorrowData && !rowDateRaw.includes(trDate) && index > 0) {
+                 tomorrowData = {
+                    Fajr: $(cols[1]).text().trim()
+                 };
+            }
+        });
+
+        if (!foundData) {
+            throw new Error("Tablo okundu ama tarih eşleşmedi.");
         }
 
         res.json({
             success: true,
-            source: 'Diyanet (Via Proxy)',
-            location: `${city} / ${region}`,
-            date: todayKey,
-            times: timings,
-            tomorrowFajr: tomorrowFajr
+            source: 'NTV (Web Scrape)',
+            location: `${ilce.toUpperCase()} / ${sehir.toUpperCase()}`,
+            date: foundData.date,
+            times: {
+                Fajr: foundData.Fajr,
+                Sunrise: foundData.Sunrise,
+                Dhuhr: foundData.Dhuhr,
+                Asr: foundData.Asr,
+                Maghrib: foundData.Maghrib,
+                Isha: foundData.Isha
+            },
+            tomorrowFajr: tomorrowData ? tomorrowData.Fajr : null
         });
 
     } catch (error) {
+        console.error(error);
         res.status(500).json({ 
-            error: 'Veri alınamadı', 
-            details: error.message, 
-            hint: "İlçe ismini İngilizce karakterle deneyin (Örn: Beylikduzu)" 
+            error: 'Veri Çekilemedi', 
+            details: error.message,
+            url: `ntv.com.tr/namaz-vakitleri/${cleanSehir}/${cleanIlce}`
         });
     }
 });
