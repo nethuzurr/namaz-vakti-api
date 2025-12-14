@@ -2,26 +2,32 @@
 const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const cors = require('cors'); // Cors kütüphanesini kullanıyoruz
+const cors = require('cors');
 
 const app = express();
 
-// --- GÜVENLİK KİLİDİNİ AÇMA (CORS FIX) ---
-// Bu ayar sayesinde uygulaman, localhost veya dosya sistemi fark etmeksizin veriyi çekebilir.
+// --- 🛑 KİLİT NOKTA: CORS AYARLARI ---
+// Uygulamanın veriyi çekebilmesi için bu ayarlar ŞARTTIR.
 app.use(cors({
-    origin: '*', // Her yerden gelen isteği kabul et
-    methods: ['GET', 'POST', 'OPTIONS'], // İzin verilen metodlar
-    allowedHeaders: ['Content-Type', 'Authorization']
+    origin: '*', // Tüm dünyadan gelen isteklere "EVET" de
+    methods: ['GET', 'POST', 'OPTIONS'], 
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
-// Ekstra garanti: Manuel Header eklemesi
+// Ekstra Garanti: Headerları elle de ekliyoruz (Bazı webview'ler cors kütüphanesini takmaz)
 app.use((req, res, next) => {
-    res.header("Access-Control-Allow-Origin", "*");
-    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    
+    // Eğer tarayıcı sadece "İzin var mı?" diye soruyorsa (Preflight), hemen "Var" de.
+    if (req.method === 'OPTIONS') {
+        return res.status(200).end();
+    }
     next();
 });
 
-// Türkçe karakterleri İngilizceye çevir
+// Türkçe karakter dönüşüm
 function slugify(text) {
     const trMap = {
         'ç': 'c', 'Ç': 'c', 'ğ': 'g', 'Ğ': 'g', 'ş': 's', 'Ş': 's',
@@ -42,11 +48,10 @@ app.get('/api/vakitler', async (req, res) => {
 
     try {
         const url = `https://www.ntv.com.tr/namaz-vakitleri/${cleanSehir}/${cleanIlce}`;
-        console.log("İstek:", url);
-
+        
         const response = await axios.get(url, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
         });
 
@@ -54,10 +59,8 @@ app.get('/api/vakitler', async (req, res) => {
         const now = new Date();
         const trDate = new Intl.DateTimeFormat('tr-TR', {
             timeZone: 'Europe/Istanbul',
-            day: 'numeric',
-            month: 'long',
-            year: 'numeric'
-        }).format(now); 
+            day: 'numeric', month: 'long', year: 'numeric'
+        }).format(now);
 
         let foundData = null;
         let tomorrowData = null;
@@ -68,7 +71,7 @@ app.get('/api/vakitler', async (req, res) => {
 
             const rowDateRaw = $(cols[0]).text().trim();
 
-            if (rowDateRaw.includes(trDate) || index === 0) { 
+            if (rowDateRaw.includes(trDate) || index === 0) {
                 if (!foundData) {
                     foundData = {
                         date: rowDateRaw,
@@ -86,7 +89,7 @@ app.get('/api/vakitler', async (req, res) => {
             }
         });
 
-        if (!foundData) throw new Error("Tarih bulunamadı");
+        if (!foundData) throw new Error("Veri bulunamadı");
 
         res.json({
             success: true,
