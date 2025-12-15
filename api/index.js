@@ -23,18 +23,17 @@ function slugify(text) {
 }
 
 app.get('/api/vakitler', async (req, res) => {
-    let { sehir, ilce } = req.query;
+    // Frontend'den gelen 'd' parametresi (tarih) burada yakalanıyor
+    let { sehir, ilce, d } = req.query;
 
-    console.log(`📡 İSTEK GELDİ: Şehir: "${sehir}" | İlçe: "${ilce}"`);
+    console.log(`📡 İSTEK: Şehir: "${sehir}" | İlçe: "${ilce}" | Tarih: "${d}"`);
 
-    // DÜZELTME: Varsayılan değerler (İstanbul/Beylikdüzü) KALDIRILDI.
-    
-    // Şehir zorunludur, yoksa hata verelim
+    // Şehir zorunludur
     if (!sehir) {
         return res.status(400).json({ success: false, message: "Şehir parametresi zorunludur." });
     }
 
-    // İlçe yoksa veya null ise boş string yapalım (Beylikdüzü yapmayalım!)
+    // İlçe yoksa boş string yap (Beylikdüzü yapma!)
     if (!ilce) {
         ilce = ""; 
     }
@@ -42,8 +41,7 @@ app.get('/api/vakitler', async (req, res) => {
     const cleanSehir = slugify(sehir);
     const cleanIlce = slugify(ilce);
     
-    // Eğer ilçe boşsa URL sonundaki slash sorun çıkarmaz, NTV bunu yönetir veya yönlendirir.
-    // Örn: .../namaz-vakitleri/tokat/ (Sondaki boşluk bazen merkez kabul edilir)
+    // URL oluşturma
     let targetUrl = `https://www.ntv.com.tr/namaz-vakitleri/${cleanSehir}`;
     if (cleanIlce) {
         targetUrl += `/${cleanIlce}`;
@@ -68,10 +66,10 @@ app.get('/api/vakitler', async (req, res) => {
             try {
                 const parts = rawDateStr.split(' ');
                 if(parts.length >= 3) {
-                    const d = parts[0].padStart(2, '0');
-                    const m = monthsTR[parts[1]];
-                    const y = parts[2];
-                    isoDate = `${y}-${m}-${d}`;
+                    const day = parts[0].padStart(2, '0');
+                    const month = monthsTR[parts[1]];
+                    const year = parts[2];
+                    isoDate = `${year}-${month}-${day}`;
                 }
             } catch (e) { }
 
@@ -93,14 +91,31 @@ app.get('/api/vakitler', async (req, res) => {
             throw new Error("Tablo bulunamadı veya boş.");
         }
 
-        const today = new Date();
-        const todayISO = today.toISOString().split('T')[0];
+        // --- TARİH SEÇİM MANTIĞI (DÜZELTİLDİ) ---
         
-        let bugunData = haftalikListe.find(d => d.isoDate === todayISO);
-        if (!bugunData) bugunData = haftalikListe[0];
+        let targetDate = d; // Frontend'den gelen tarih (2025-12-16)
 
+        // Eğer frontend tarih göndermediyse, bugünü baz al
+        if (!targetDate) {
+            const today = new Date();
+            targetDate = today.toISOString().split('T')[0];
+        }
+
+        console.log(`🎯 İstenen Tarih: ${targetDate}`);
+
+        // Listeden istenen tarihi bul
+        let selectedData = haftalikListe.find(item => item.isoDate === targetDate);
+
+        // Eğer istenen tarih listede yoksa (geçmiş veya çok gelecek), listenin ilkini ver
+        if (!selectedData) {
+            console.log("⚠️ İstenen tarih listede bulunamadı, varsayılan (ilk gün) gönderiliyor.");
+            selectedData = haftalikListe[0];
+        }
+
+        // Yarının imsak vaktini bul (Geri sayım için)
+        // Seçilen verinin listedeki sırasını bulup bir sonrakine bakıyoruz
         let tomorrowFajr = "00:00";
-        const currentIndex = haftalikListe.indexOf(bugunData);
+        const currentIndex = haftalikListe.indexOf(selectedData);
         if (currentIndex !== -1 && currentIndex + 1 < haftalikListe.length) {
             tomorrowFajr = haftalikListe[currentIndex + 1].Fajr;
         }
@@ -109,14 +124,13 @@ app.get('/api/vakitler', async (req, res) => {
             success: true,
             source: 'NTV',
             location: cleanIlce ? `${ilce.toUpperCase()} / ${sehir.toUpperCase()}` : sehir.toUpperCase(),
-            times: bugunData,
+            times: selectedData,    // Artık seçilen güne ait vakitler gidiyor
             tomorrowFajr: tomorrowFajr,
             full_list: haftalikListe
         });
 
     } catch (error) {
         console.error("🔥 Hata:", error.message);
-        // 404 hatasını frontend'in anlaması için status kodunu geçiriyoruz
         if (error.response && error.response.status === 404) {
             return res.status(404).json({ success: false, message: "İlçe bulunamadı (NTV 404)" });
         }
