@@ -33,7 +33,7 @@ app.get('/api/vakitler', async (req, res) => {
         return res.status(400).json({ success: false, message: "Şehir parametresi zorunludur." });
     }
 
-    // İlçe yoksa boş string yap (Beylikdüzü yapma!)
+    // İlçe yoksa boş string yap
     if (!ilce) {
         ilce = ""; 
     }
@@ -91,11 +91,9 @@ app.get('/api/vakitler', async (req, res) => {
             throw new Error("Tablo bulunamadı veya boş.");
         }
 
-        // --- TARİH SEÇİM MANTIĞI (DÜZELTİLDİ) ---
-        
-        let targetDate = d; // Frontend'den gelen tarih (2025-12-16)
+        // --- TARİH SEÇİM MANTIĞI ---
+        let targetDate = d; 
 
-        // Eğer frontend tarih göndermediyse, bugünü baz al
         if (!targetDate) {
             const today = new Date();
             targetDate = today.toISOString().split('T')[0];
@@ -103,28 +101,33 @@ app.get('/api/vakitler', async (req, res) => {
 
         console.log(`🎯 İstenen Tarih: ${targetDate}`);
 
-        // Listeden istenen tarihi bul
         let selectedData = haftalikListe.find(item => item.isoDate === targetDate);
 
-        // Eğer istenen tarih listede yoksa (geçmiş veya çok gelecek), listenin ilkini ver
         if (!selectedData) {
             console.log("⚠️ İstenen tarih listede bulunamadı, varsayılan (ilk gün) gönderiliyor.");
             selectedData = haftalikListe[0];
         }
 
-        // Yarının imsak vaktini bul (Geri sayım için)
-        // Seçilen verinin listedeki sırasını bulup bir sonrakine bakıyoruz
         let tomorrowFajr = "00:00";
         const currentIndex = haftalikListe.indexOf(selectedData);
         if (currentIndex !== -1 && currentIndex + 1 < haftalikListe.length) {
             tomorrowFajr = haftalikListe[currentIndex + 1].Fajr;
         }
 
+        // ============================================================
+        // 🔥 KRİTİK EKLEME: VERCEL CACHE (ÖNBELLEKLEME)
+        // ============================================================
+        // s-maxage=86400 -> Vercel (Edge) bu cevabı 24 saat (1 gün) saklasın.
+        // stale-while-revalidate=600 -> Süre dolsa bile kullanıcıyı bekletme, 
+        // eskiyi gösterirken arkada yenisini çek (10 dakika tolerans).
+        res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate=600');
+        // ============================================================
+
         res.json({
             success: true,
             source: 'NTV',
             location: cleanIlce ? `${ilce.toUpperCase()} / ${sehir.toUpperCase()}` : sehir.toUpperCase(),
-            times: selectedData,    // Artık seçilen güne ait vakitler gidiyor
+            times: selectedData, 
             tomorrowFajr: tomorrowFajr,
             full_list: haftalikListe
         });
