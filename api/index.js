@@ -28,50 +28,45 @@ app.get('/api/vakitler', async (req, res) => {
         return res.status(400).json({ success: false, message: "Şehir parametresi zorunludur." });
     }
 
-    if (!ilce) ilce = ""; 
-
     const cleanSehir = slugify(sehir);
-    const cleanIlce = slugify(ilce);
+    const cleanIlce = slugify(ilce || "");
     
-    // 🔥 DEĞİŞİKLİK BURADA: URL'nin sonuna /aylik ekledik. 
-    // Bu sayede NTV bize 5 günlük değil, 30 günlük tabloyu gönderiyor.
-    let targetUrl = `https://www.ntv.com.tr/namaz-vakitleri/${cleanSehir}`;
+    // 🔥 YENİ KAYNAK: Habertürk hem stabil hem de direkt 30 günlük tablo veriyor.
+    let targetUrl = `https://www.haberturk.com/namaz-vakitleri/${cleanSehir}`;
     if (cleanIlce) {
         targetUrl += `/${cleanIlce}`;
     }
-    targetUrl += "/aylik"; 
 
-    console.log(`🔗 Hedef URL: ${targetUrl}`);
+    console.log(`🔗 Bağlanılan URL: ${targetUrl}`);
 
     try {
         const response = await axios.get(targetUrl, { 
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } 
+            headers: { 'User-Agent': 'Mozilla/5.0' } 
         });
 
         const $ = cheerio.load(response.data);
-        const haftalikListe = [];
+        const tamListe = [];
 
-        // Tablo satırlarını dönüyoruz
+        // Habertürk'ün tablo satırlarını hedefliyoruz
         $('table tbody tr').each((index, element) => {
             const cols = $(element).find('td');
             if (cols.length < 7) return;
 
-            const rawDateStr = $(cols[0]).text().trim(); // Örn: "30 Aralık 2025 Pazartesi"
+            const rawDateStr = $(cols[0]).text().trim(); // Örn: "31 Aralık 2025 Çarşamba"
             let isoDate = null;
 
             try {
                 const parts = rawDateStr.split(' ');
-                if(parts.length >= 2) {
+                if(parts.length >= 3) {
                     const day = parts[0].padStart(2, '0');
                     const month = monthsTR[parts[1]];
-                    // Eğer tabloda yıl yazmıyorsa mevcut yılı kullan
-                    const year = (parts[2] && parts[2].length === 4) ? parts[2] : new Date().getFullYear();
+                    const year = parts[2];
                     isoDate = `${year}-${month}-${day}`;
                 }
             } catch (e) { }
 
             if (isoDate) {
-                haftalikListe.push({
+                tamListe.push({
                     isoDate: isoDate,
                     rawDate: rawDateStr,
                     Fajr: $(cols[1]).text().trim(),
@@ -84,40 +79,34 @@ app.get('/api/vakitler', async (req, res) => {
             }
         });
 
-        if (haftalikListe.length === 0) {
-            throw new Error("Veri çekilemedi. NTV sayfa yapısını değiştirmiş olabilir.");
-        }
+        if (tamListe.length === 0) throw new Error("Veri bulunamadı.");
 
-        // Tarih seçimi
+        // Seçili günü bulma (veya bugünü)
         let targetDate = d || new Date().toISOString().split('T')[0];
-        let selectedData = haftalikListe.find(item => item.isoDate === targetDate);
+        let selectedData = tamListe.find(item => item.isoDate === targetDate) || tamListe[0];
 
-        if (!selectedData) {
-            selectedData = haftalikListe[0];
-        }
-
-        // Yarınki imsak vakti (Kalan süreyi hesaplamak için kullanıyorsan lazım olur)
+        // Yarınki İmsak
         let tomorrowFajr = "00:00";
-        const currentIndex = haftalikListe.findIndex(item => item.isoDate === selectedData.isoDate);
-        if (currentIndex !== -1 && currentIndex + 1 < haftalikListe.length) {
-            tomorrowFajr = haftalikListe[currentIndex + 1].Fajr;
+        const currentIndex = tamListe.findIndex(item => item.isoDate === selectedData.isoDate);
+        if (currentIndex !== -1 && currentIndex + 1 < tamListe.length) {
+            tomorrowFajr = tamListe[currentIndex + 1].Fajr;
         }
 
         res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate=600');
         
         res.json({
             success: true,
-            source: 'NTV',
-            location: cleanIlce ? `${ilce.toUpperCase()} / ${sehir.toUpperCase()}` : sehir.toUpperCase(),
-            count: haftalikListe.length, // Kaç günlük veri geldiğini görelim
+            source: 'HaberTurk (30 Günlük)',
+            location: ilce ? `${ilce.toUpperCase()} / ${sehir.toUpperCase()}` : sehir.toUpperCase(),
+            count: tamListe.length, 
             times: selectedData, 
             tomorrowFajr: tomorrowFajr,
-            full_list: haftalikListe // Artık burada ~30 günlük veri olacak
+            full_list: tamListe 
         });
 
     } catch (error) {
         console.error("🔥 Hata:", error.message);
-        res.status(500).json({ success: false, message: error.message });
+        res.status(500).json({ success: false, message: "Veri çekilemedi veya URL hatalı." });
     }
 });
 
