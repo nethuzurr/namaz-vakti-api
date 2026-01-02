@@ -242,7 +242,7 @@ app.get('/api/vakitler', async (req, res) => {
 
         // eskiyi gösterirken arkada yenisini çek (10 dakika tolerans).
 
-        res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate=600');
+        res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=600');
 
         // ============================================================
 
@@ -285,3 +285,4 @@ app.get('/api/vakitler', async (req, res) => {
 
 
 module.exports = app;
+
